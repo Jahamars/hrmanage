@@ -1,3 +1,4 @@
+
 import sys
 import psycopg2
 from PyQt5.QtWidgets import (
@@ -9,11 +10,11 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton,
 
 # Конфигурация подключения к базе данных
 DB_CONFIG = {
-    'dbname': '',
-    'user': '',
-    'password': '',
-    'host': '',
-    'port': ''
+    'dbname': 'my',
+    'user': 'postgres',
+    'password': 'joker',
+    'host': 'localhost',
+    'port': '5432'
 }
 
 
@@ -107,21 +108,37 @@ class DepartmentsWindow(QDialog):
         self.btn_delete.clicked.connect(self.delete_department)
         
         self.load_departments()
+   
     
     def load_departments(self):
-        """Загружает список подразделений из базы данных."""
-        connection = get_connection()
-        cursor = connection.cursor()
-        cursor.execute("SELECT * FROM Departments")
-        rows = cursor.fetchall()
-        self.table.setRowCount(len(rows))
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["ID", "Название"])
-        for i, row in enumerate(rows):
-            self.table.setItem(i, 0, QTableWidgetItem(str(row[0])))
-            self.table.setItem(i, 1, QTableWidgetItem(row[1]))
-        connection.close()
-    
+            """Загружает список подразделений и количество сотрудников в каждом подразделении из базы данных."""
+            connection = get_connection()
+            cursor = connection.cursor()
+
+            # Извлекаем данные о подразделениях и количестве сотрудников
+            query = """
+            SELECT 
+                d.DepartmentID, 
+                d.DepartmentName, 
+                COUNT(e.EmployeeID) AS EmployeeCount
+            FROM Departments d
+            LEFT JOIN Employees e ON d.DepartmentID = e.DepartmentID
+            GROUP BY d.DepartmentID
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            self.table.setRowCount(len(rows))
+            self.table.setColumnCount(3)  # Количество столбцов увеличиваем на 1 для отображения количества сотрудников
+            self.table.setHorizontalHeaderLabels(["ID", "Название", "Количество сотрудников"])
+            
+            for i, row in enumerate(rows):
+                for j, value in enumerate(row):
+                    self.table.setItem(i, j, QTableWidgetItem(str(value)))
+
+            connection.close()
+
+
+
     def add_department(self):
         """Добавляет новое подразделение."""
         name, ok = QInputDialog.getText(self, "Добавить подразделение", "Название подразделения:")
@@ -294,49 +311,55 @@ class EmployeesWindow(QDialog):
         self.setWindowTitle("Управление сотрудниками")
         self.setGeometry(200, 200, 800, 500)
         self.layout = QVBoxLayout()
-        
+
         self.table = QTableWidget()
         self.layout.addWidget(self.table)
-        
+
         self.btn_add = QPushButton("Добавить")
         self.btn_update = QPushButton("Изменить")
         self.btn_delete = QPushButton("Удалить")
-        
+        self.btn_view_history = QPushButton("Посмотреть историю")
+
         self.layout.addWidget(self.btn_add)
         self.layout.addWidget(self.btn_update)
         self.layout.addWidget(self.btn_delete)
-        
+        self.layout.addWidget(self.btn_view_history)
+
         self.setLayout(self.layout)
-        
+
         # Соединение кнопок с функциями
         self.btn_add.clicked.connect(self.add_employee)
         self.btn_update.clicked.connect(self.update_employee)
         self.btn_delete.clicked.connect(self.delete_employee)
-        
+        self.btn_view_history.clicked.connect(self.view_history)
+
         self.load_employees()
-    
+
     def load_employees(self):
         """Загружает список сотрудников из базы данных."""
         connection = get_connection()
         cursor = connection.cursor()
         query = """
         SELECT 
-            e.EmployeeID, e.FirstName, ed.EducationName, d.DepartmentName, p.PositionName
+            e.EmployeeID, e.FirstName, ed.EducationName, d.DepartmentName, p.PositionName,
+            COUNT(h.EmployeeID) AS PositionChanges
         FROM Employees e
         JOIN Education ed ON e.EducationID = ed.EducationID
         JOIN Departments d ON e.DepartmentID = d.DepartmentID
         JOIN Positions p ON e.PositionID = p.PositionID
+        LEFT JOIN History h ON e.EmployeeID = h.EmployeeID
+        GROUP BY e.EmployeeID, ed.EducationName, d.DepartmentName, p.PositionName
         """
         cursor.execute(query)
         rows = cursor.fetchall()
         self.table.setRowCount(len(rows))
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["ID", "Имя", "Образование", "Подразделение", "Должность"])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["ID", "Имя", "Образование", "Подразделение", "Должность", "Количество изменений"])
         for i, row in enumerate(rows):
             for j, value in enumerate(row):
                 self.table.setItem(i, j, QTableWidgetItem(str(value)))
         connection.close()
-    
+
     def add_employee(self):
         """Добавляет нового сотрудника и запись в таблицу History."""
         dialog = AddEditEmployeeDialog()
@@ -355,7 +378,7 @@ class EmployeesWindow(QDialog):
                 )
                 # Получаем ID нового сотрудника
                 new_employee_id = cursor.fetchone()[0]
-    
+
                 # Добавляем запись в таблицу History
                 cursor.execute(
                     """
@@ -364,7 +387,7 @@ class EmployeesWindow(QDialog):
                     """,
                     (new_employee_id, position_id)
                 )
-    
+
                 # Фиксируем изменения
                 connection.commit()
             except Exception as e:
@@ -373,53 +396,116 @@ class EmployeesWindow(QDialog):
                 print(f"Ошибка при добавлении записи: {e}")
             finally:
                 connection.close()
-    
+
             # Обновляем список сотрудников
             self.load_employees()
-    
-    
+
     def update_employee(self):
-        """Обновляет информацию о сотруднике."""
+        """Обновляет информацию о сотруднике, в том числе должность."""
         row = self.table.currentRow()
         if row >= 0:
             employee_id = self.table.item(row, 0).text()
             current_name = self.table.item(row, 1).text()
-            dialog = AddEditEmployeeDialog(current_name)
+            current_position = self.table.item(row, 4).text()  # Get the current position
+            dialog = AddEditEmployeeDialog(current_name, current_position)
             if dialog.exec_() == QDialog.Accepted:
                 first_name, education_id, department_id, position_id = dialog.get_data()
                 connection = get_connection()
                 cursor = connection.cursor()
-                cursor.execute(
-                    """
-                    UPDATE Employees
-                    SET FirstName = %s, EducationID = %s, DepartmentID = %s, PositionID = %s
-                    WHERE EmployeeID = %s
-                    """,
-                    (first_name, education_id, department_id, position_id, employee_id)
-                )
-                connection.commit()
-                connection.close()
+                try:
+                    # Update the employee's information
+                    cursor.execute(
+                        """
+                        UPDATE Employees
+                        SET FirstName = %s, EducationID = %s, DepartmentID = %s, PositionID = %s
+                        WHERE EmployeeID = %s
+                        """,
+                        (first_name, education_id, department_id, position_id, employee_id)
+                    )
+
+                    # Log the position change in the History table
+                    cursor.execute(
+                        """
+                        INSERT INTO History (EmployeeID, PositionID, Date)
+                        VALUES (%s, %s, CURRENT_DATE)
+                        """,
+                        (employee_id, position_id)
+                    )
+
+                    connection.commit()
+                except Exception as e:
+                    connection.rollback()
+                    print(f"Ошибка при изменении данных сотрудника: {e}")
+                finally:
+                    connection.close()
+
                 self.load_employees()
         else:
             QMessageBox.warning(self, "Ошибка", "Выберите сотрудника для изменения.")
-    
+
     def delete_employee(self):
-        """Удаляет выбранного сотрудника."""
+        """Удаляет выбранного сотрудника и все связанные записи."""
         row = self.table.currentRow()
         if row >= 0:
             employee_id = self.table.item(row, 0).text()
             connection = get_connection()
             cursor = connection.cursor()
             try:
+                # First, delete related records from History
+                cursor.execute("DELETE FROM History WHERE EmployeeID = %s", (employee_id,))
+                # Now, delete the employee from Employees
                 cursor.execute("DELETE FROM Employees WHERE EmployeeID = %s", (employee_id,))
                 connection.commit()
-            except psycopg2.IntegrityError:
-                QMessageBox.warning(self, "Ошибка", "Невозможно удалить сотрудника, так как он связан с записями в истории.")
+            except Exception as e:
+                connection.rollback()
+                QMessageBox.warning(self, "Ошибка", f"Ошибка при удалении сотрудника: {e}")
             finally:
                 connection.close()
+
             self.load_employees()
         else:
             QMessageBox.warning(self, "Ошибка", "Выберите сотрудника для удаления.")
+
+    def view_history(self):
+        """Открывает окно с историей изменений для выбранного сотрудника."""
+        row = self.table.currentRow()
+        if row >= 0:
+            employee_id = self.table.item(row, 0).text()
+            connection = get_connection()
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT h.Date, p.PositionName, e.FirstName
+                FROM History h
+                JOIN Employees e ON h.EmployeeID = e.EmployeeID
+                JOIN Positions p ON h.PositionID = p.PositionID
+                WHERE h.EmployeeID = %s
+                ORDER BY h.Date DESC
+                """, (employee_id,)
+            )
+            history_rows = cursor.fetchall()
+            connection.close()
+
+            # Create a dialog to show history
+            history_dialog = QDialog(self)
+            history_dialog.setWindowTitle("История изменений должности")
+            history_layout = QVBoxLayout()
+
+            history_table = QTableWidget()
+            history_table.setRowCount(len(history_rows))
+            history_table.setColumnCount(3)
+            history_table.setHorizontalHeaderLabels(["Дата", "Должность", "Изменил"])
+
+            for i, row in enumerate(history_rows):
+                for j, value in enumerate(row):
+                    history_table.setItem(i, j, QTableWidgetItem(str(value)))
+
+            history_layout.addWidget(history_table)
+            history_dialog.setLayout(history_layout)
+            history_dialog.exec_()
+        else:
+            QMessageBox.warning(self, "Ошибка", "Выберите сотрудника для просмотра истории.")
+
 
 
 class AddEditEmployeeDialog(QDialog):
@@ -515,22 +601,38 @@ class EducationWindow(QDialog):
         # Загружаем данные образования
         self.load_education()
     
+   
     def load_education(self):
-        """Загружает все записи об образовании из базы данных."""
+        """Загружает все записи об образовании и количество работников с данным образованием из базы данных."""
         connection = get_connection()
         cursor = connection.cursor()
-        cursor.execute("SELECT EducationID, EducationName FROM Education")
+        
+        # Запрос для получения количества сотрудников для каждого образования
+        query = """
+        SELECT 
+            e.EducationID, 
+            e.EducationName, 
+            COUNT(emp.EmployeeID) AS EmployeeCount
+        FROM Education e
+        LEFT JOIN Employees emp ON e.EducationID = emp.EducationID
+        GROUP BY e.EducationID
+        """
+        
+        cursor.execute(query)
         rows = cursor.fetchall()
         
         self.table.setRowCount(len(rows))
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["ID", "Образование"])
+        self.table.setColumnCount(3)  # Добавляем столбец для отображения количества сотрудников
+        self.table.setHorizontalHeaderLabels(["ID", "Образование", "Количество сотрудников"])
         
         for i, row in enumerate(rows):
             for j, value in enumerate(row):
                 self.table.setItem(i, j, QTableWidgetItem(str(value)))
         
         connection.close()
+
+
+
 
     def add_education(self):
         """Добавляет новое образование."""
@@ -690,4 +792,3 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
